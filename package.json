@@ -1,0 +1,17 @@
+{
+  "name": "scan-bridge-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local bridge server that drives a USB/TWAIN/SANE scanner and streams scanned pages to the browser.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "start:ocr": "OCR_ENABLED=1 node index.js",
+    "dev": "node --watch index.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2"
+  }
+}
