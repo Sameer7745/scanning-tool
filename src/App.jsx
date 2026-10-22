@@ -1,12 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 
-// When the page is served BY the bridge (one-process deploy), target the same
-// host it was loaded from — so a customer opening http://scanner-pc-ip:3001
-// just works. In Vite dev (port 5173) fall back to the bridge on :3001.
-const DEFAULT_BRIDGE =
-  typeof window !== "undefined" && window.location.port !== "5173"
-    ? window.location.origin
-    : "http://localhost:3001";
+// The scan bridge runs as a LOCAL agent on the PC doing the scanning, so the
+// default is always http://localhost:3001 — even when this page is served from a
+// remote server (VPS). Browsers allow an HTTPS page to call http://localhost.
+// (Override in the UI field if the bridge runs on another machine on the LAN.)
+const DEFAULT_BRIDGE = "http://localhost:3001";
 
 // Friendly names for common Tesseract language codes (Indian languages + more).
 const LANG_NAMES = {
