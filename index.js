@@ -12,7 +12,8 @@
 
 // Load .env (next to the binary/app) before anything reads process.env.
 import dotenv from "dotenv";
-import { ENV_FILE, ensureEnvFile, findWebDist } from "./runtime.js";
+import { ENV_FILE, ensureEnvFile, findWebDist, PACKAGED } from "./runtime.js";
+import { spawn as _spawn } from "node:child_process";
 ensureEnvFile();
 dotenv.config({ path: ENV_FILE });
 
@@ -33,6 +34,7 @@ import { fileURLToPath } from "node:url";
 import { detectBackend, listDevices, startScan, diagnostics } from "./scanner.js";
 import { resolveScannerUrl, esclReachable, discoverScanners } from "./escl.js";
 import { getConfig, setConfig } from "./config.js";
+import { setupInfo, runInstall } from "./setup.js";
 import {
   ocrAvailable,
   installedLanguages,
@@ -124,6 +126,28 @@ app.post("/api/config", (req, res) => {
   } catch (e) {
     res.status(400).json({ error: String(e.message || e) });
   }
+});
+
+// Is the scanner backend (NAPS2/SANE) installed, and can we auto-install it?
+app.get("/api/setup", (_req, res) => res.json(setupInfo()));
+
+// Auto-install the scanner backend (winget/brew). Returns when done.
+app.post("/api/setup/install", (_req, res) => {
+  const info = setupInfo();
+  if (info.installed) return res.json({ ok: true, alreadyInstalled: true });
+  if (!info.canAutoInstall) {
+    return res.status(400).json({ ok: false, error: "No automatic installer available — install manually.", manualUrl: info.manualUrl });
+  }
+  log.info("setup", `auto-installing ${info.pkg} via ${info.method}`);
+  runInstall((err, result) => {
+    if (err) {
+      log.error("setup", "install failed", String(err.message || err));
+      return res.status(500).json({ ok: false, error: String(err.message || err) });
+    }
+    const after = setupInfo();
+    log.info("setup", "install finished", { code: result.code, installed: after.installed });
+    res.json({ ok: after.installed || result.code === 0, installed: after.installed, backend: after.backend, output: result.output });
+  });
 });
 
 // Live connection status for the UI: is a scanner connected right now?
@@ -417,4 +441,17 @@ app.listen(PORT, () => {
     console.log("");
   }
   log.info("startup", "bridge ready", { port: PORT, backend, ocr: OCR_ENABLED, ui: hasBuiltUI });
+
+  // Open the panel in the default browser so the user sees the UI (not a console).
+  // On by default for the packaged app; set OPEN_BROWSER=0 to disable.
+  const shouldOpen =
+    process.env.OPEN_BROWSER === "1" || (PACKAGED && process.env.OPEN_BROWSER !== "0");
+  if (shouldOpen && hasBuiltUI) {
+    const url = `http://localhost:${PORT}`;
+    try {
+      if (process.platform === "win32") _spawn("cmd", ["/c", "start", "", url], { detached: true, stdio: "ignore" }).unref();
+      else if (process.platform === "darwin") _spawn("open", [url], { detached: true, stdio: "ignore" }).unref();
+      else _spawn("xdg-open", [url], { detached: true, stdio: "ignore" }).unref();
+    } catch {}
+  }
 });

@@ -10,9 +10,26 @@
 //   node pkg.mjs win        # one: win | mac-arm | mac-x64 | linux
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, existsSync } from "node:fs";
+import { mkdirSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+// Flip a Windows exe from CONSOLE to GUI subsystem so no console window appears
+// (it auto-opens the browser to the panel instead).
+function hideWindowsConsole(file) {
+  try {
+    const buf = readFileSync(file);
+    const peOff = buf.readUInt32LE(0x3c);
+    if (buf.readUInt32LE(peOff) !== 0x00004550) return false;
+    const subsystemOff = peOff + 24 + 68;
+    if (buf.readUInt16LE(subsystemOff) === 3) {
+      buf.writeUInt16LE(2, subsystemOff);
+      writeFileSync(file, buf);
+      return true;
+    }
+  } catch {}
+  return false;
+}
 
 const here = dirname(fileURLToPath(import.meta.url));
 const entry = join(here, "dist-bin", "bridge.cjs");
@@ -56,6 +73,7 @@ for (const k of keys) {
       ],
       { stdio: "inherit", cwd: here }
     );
+    if (k === "win" && hideWindowsConsole(output)) console.log("  ✓ console window hidden (GUI subsystem)");
     console.log(`  ✓ ${outName}`);
   } catch {
     console.error(`  ✗ failed to build ${k} (needs internet for base binaries).`);
