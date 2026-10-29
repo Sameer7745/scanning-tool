@@ -85,6 +85,19 @@ body {
 .dl-others a { color: var(--accent-ink); font-weight: 600; text-decoration: none; }
 .dl-others a:hover { text-decoration: underline; }
 
+/* Setup / driver-install card */
+.setup-card { border-color: #fde68a; background: linear-gradient(180deg, #fffbeb, var(--surface)); }
+:root[data-theme="dark"] .setup-card { background: var(--surface); }
+.setup-body { display: flex; gap: 14px; align-items: flex-start; }
+.setup-ico {
+  width: 42px; height: 42px; flex: none; display: grid; place-items: center; font-size: 20px;
+  color: #fff; border-radius: 10px; background: linear-gradient(135deg, #f59e0b, #d97706);
+}
+.setup-body h2 { margin: 0; font-size: 16px; }
+.setup-body p { margin: 4px 0 0; font-size: 13px; color: var(--muted); }
+.setup-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 14px; }
+.setup-note { font-size: 13px; color: var(--muted); }
+
 /* Status card */
 .status-card { display: flex; align-items: center; gap: 16px; }
 .status-ring {

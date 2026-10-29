@@ -55,6 +55,8 @@ export default function App() {
   const [checking, setChecking] = useState(false);
   const [savingCfg, setSavingCfg] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [setup, setSetup] = useState(null); // {installed, canAutoInstall, method, pkg, manualUrl}
+  const [installing, setInstalling] = useState(false);
   const [dl, setDl] = useState(null); // download manifest
   const detectedOS = useRef(detectOS()).current;
   const esRef = useRef(null);
@@ -76,10 +78,30 @@ export default function App() {
       setDevices(d.devices || []);
       const c = await fetch(`${base}/api/config`).then((x) => x.json());
       setCfg(c);
+      fetch(`${base}/api/setup`).then((x) => x.json()).then(setSetup).catch(() => {});
       refreshStatus();
     } catch {
       setError(`Could not reach the bridge at ${base}. Is the bridge app running on this machine?`);
       setConnState({ connected: false, detail: "bridge unreachable" });
+    }
+  }
+
+  async function installBackend() {
+    setInstalling(true);
+    setError("");
+    setStatus(`Installing ${setup?.pkg || "scanner driver"}… this can take a minute.`);
+    try {
+      const r = await fetch(`${base}/api/setup/install`, { method: "POST" }).then((x) => x.json());
+      if (r.installed || r.ok) {
+        setStatus("Scanner driver installed. Re-checking…");
+        await checkConnection(); // re-detect backend + status
+      } else {
+        setError(r.error || "Install did not complete. Try the manual download.");
+      }
+    } catch (e) {
+      setError(String(e.message || e));
+    } finally {
+      setInstalling(false);
     }
   }
 
@@ -294,6 +316,39 @@ export default function App() {
           {checking ? "Checking…" : "↻ Check"}
         </button>
       </section>
+
+      {/* Driver setup — shown when the scanner backend isn't installed (mock mode) */}
+      {health && health.backend === "mock" && (
+        <section className="card setup-card">
+          <div className="setup-body">
+            <span className="setup-ico">⚙</span>
+            <div>
+              <h2>Scanner driver not installed</h2>
+              <p>
+                The bridge is in <b>sample mode</b> (test image). Install{" "}
+                {setup?.pkg || "the scanner driver"} to scan your real scanner.
+              </p>
+            </div>
+          </div>
+          <div className="setup-actions">
+            {setup?.canAutoInstall ? (
+              <button className="btn primary" onClick={installBackend} disabled={installing}>
+                {installing ? "Installing…" : `⤓ Install ${setup.pkg} automatically`}
+              </button>
+            ) : (
+              <span className="setup-note">Automatic install isn't available here — install manually:</span>
+            )}
+            {setup?.manualUrl && (
+              <a className="btn ghost" href={setup.manualUrl} target="_blank" rel="noopener noreferrer">
+                Download manually
+              </a>
+            )}
+            <button className="btn ghost" onClick={checkConnection} disabled={installing}>
+              Skip / Re-check
+            </button>
+          </div>
+        </section>
+      )}
 
       {/* Scan card */}
       <section className="card scan-card">
