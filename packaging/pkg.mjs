@@ -47,7 +47,13 @@ for (const k of keys) {
   try {
     execFileSync(
       "npx",
-      ["@yao-pkg/pkg", entry, "--config", cfg, "--targets", triple, "--output", output],
+      [
+        "@yao-pkg/pkg", entry, "--config", cfg,
+        // Store plain JS instead of V8 bytecode, so CROSS-built binaries (e.g.
+        // a Windows exe built on Linux/macOS) run on the target OS.
+        "--public", "--public-packages", "*",
+        "--targets", triple, "--output", output,
+      ],
       { stdio: "inherit", cwd: here }
     );
     console.log(`  ✓ ${outName}`);
