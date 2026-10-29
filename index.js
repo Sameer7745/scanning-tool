@@ -128,6 +128,14 @@ app.post("/api/config", (req, res) => {
   }
 });
 
+// Shut the bridge down from the UI (so users don't need Task Manager, and can
+// replace the app). Responds first, then exits.
+app.post("/api/quit", (_req, res) => {
+  log.info("quit", "shutdown requested from the panel");
+  res.json({ ok: true });
+  setTimeout(() => process.exit(0), 300);
+});
+
 // Is the scanner backend (NAPS2/SANE) installed, and can we auto-install it?
 app.get("/api/setup", (_req, res) => res.json(setupInfo()));
 
