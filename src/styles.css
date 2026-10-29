@@ -85,6 +85,56 @@ body {
 .dl-others a { color: var(--accent-ink); font-weight: 600; text-decoration: none; }
 .dl-others a:hover { text-decoration: underline; }
 
+/* Header right cluster */
+.header-right { display: flex; align-items: center; gap: 10px; }
+.header-link {
+  font-size: 13px; font-weight: 600; color: var(--accent-ink); text-decoration: none;
+  padding: 6px 12px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--surface);
+}
+.header-link:hover { background: var(--accent-soft); }
+
+/* Notice card (bridge not running) */
+.notice-card {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  border-color: #fde68a; background: linear-gradient(180deg, #fffbeb, var(--surface));
+}
+:root[data-theme="dark"] .notice-card { background: var(--surface); }
+.notice-card h2 { margin: 0; font-size: 16px; }
+.notice-card p { margin: 4px 0 0; font-size: 13px; color: var(--muted); }
+
+/* ===== Download page ===== */
+.dlpage { max-width: 680px; margin: 0 auto; padding: 28px 18px 60px; }
+.dl-topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding-bottom: 18px; margin-bottom: 8px; border-bottom: 1px solid var(--line);
+}
+.dl-hero { text-align: center; padding: 40px 10px 28px; }
+.dl-hero-badge {
+  display: inline-block; font-size: 12px; font-weight: 700; letter-spacing: .6px;
+  text-transform: uppercase; color: var(--accent-ink); background: var(--accent-soft);
+  padding: 5px 12px; border-radius: 999px; margin-bottom: 16px;
+}
+.dl-hero h2 { font-size: 26px; line-height: 1.2; margin: 0 0 12px; letter-spacing: -0.4px; }
+.dl-hero > p { font-size: 15px; color: var(--muted); max-width: 480px; margin: 0 auto 26px; line-height: 1.55; }
+.btn.xl { padding: 15px 34px; font-size: 16px; border-radius: 12px; box-shadow: 0 6px 18px rgba(37,99,235,.28); }
+.dl-alts { margin-top: 18px; font-size: 13px; color: var(--muted); display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+.dl-alts a { color: var(--accent-ink); font-weight: 600; text-decoration: none; }
+.dl-alts a:hover { text-decoration: underline; }
+
+.dl-steps { display: grid; gap: 12px; margin-top: 10px; }
+.step {
+  display: flex; gap: 14px; align-items: flex-start;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r);
+  padding: 16px 18px; box-shadow: var(--shadow);
+}
+.step .n {
+  width: 28px; height: 28px; flex: none; border-radius: 8px; display: grid; place-items: center;
+  font-weight: 700; font-size: 14px; color: #fff;
+  background: linear-gradient(135deg, var(--accent), var(--violet));
+}
+.step h3 { margin: 2px 0 3px; font-size: 15px; }
+.step p { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.5; }
+
 /* Setup / driver-install card */
 .setup-card { border-color: #fde68a; background: linear-gradient(180deg, #fffbeb, var(--surface)); }
 :root[data-theme="dark"] .setup-card { background: var(--surface); }

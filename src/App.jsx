@@ -11,27 +11,6 @@ const LANG_NAMES = {
   pan: "Punjabi", ori: "Odia", urd: "Urdu", asm: "Assamese",
 };
 
-const OS_LABEL = {
-  windows: "Windows", "macos-arm64": "macOS (Apple Silicon)",
-  "macos-x64": "macOS (Intel)", linux: "Linux",
-};
-// Used if the downloads manifest can't be fetched.
-const FALLBACK_DL = {
-  windows: "ScanBridge-win-x64.exe",
-  "macos-arm64": "ScanBridge-macos-arm64",
-  "macos-x64": "ScanBridge-macos-x64",
-  linux: "ScanBridge-linux-x64",
-};
-
-// Detect the visitor's OS so we can offer the matching installer.
-function detectOS() {
-  const ua = (navigator.userAgent || "").toLowerCase();
-  const plat = ((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "").toLowerCase();
-  if (plat.includes("win") || ua.includes("windows")) return "windows";
-  if (plat.includes("mac") || ua.includes("macintosh") || ua.includes("mac os")) return "macos-arm64";
-  if (plat.includes("linux") || ua.includes("linux") || ua.includes("x11")) return "linux";
-  return "windows";
-}
 
 export default function App() {
   const [bridge, setBridge] = useState(
@@ -57,8 +36,6 @@ export default function App() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [setup, setSetup] = useState(null); // {installed, canAutoInstall, method, pkg, manualUrl}
   const [installing, setInstalling] = useState(false);
-  const [dl, setDl] = useState(null); // download manifest
-  const detectedOS = useRef(detectOS()).current;
   const esRef = useRef(null);
   const pageCounter = useRef(0);
   const scanIndexToUid = useRef({});
@@ -139,12 +116,6 @@ export default function App() {
 
   useEffect(() => {
     checkConnection();
-    // Download manifest is served by the PAGE host (the VPS), so fetch it
-    // relative — this works even when the local bridge isn't running yet.
-    fetch("/downloads/manifest.json")
-      .then((r) => (r.ok ? r.json() : null))
-      .then((m) => setDl(m))
-      .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -255,44 +226,25 @@ export default function App() {
             <p>{health ? `${health.backend} · ${health.platform}` : "connecting…"}</p>
           </div>
         </div>
-        <span className={`badge ${connected ? "ok" : "bad"}`}>
-          <span className="badge-dot" />
-          {connected ? "Online" : "Offline"}
-        </span>
+        <div className="header-right">
+          <a className="header-link" href="/download">⬇ Get app</a>
+          <span className={`badge ${connected ? "ok" : "bad"}`}>
+            <span className="badge-dot" />
+            {connected ? "Online" : "Offline"}
+          </span>
+        </div>
       </header>
 
-      {/* Install prompt — shown when the local bridge isn't reachable */}
+      {/* When the bridge isn't reachable, point to the install page (no inline download) */}
       {!health && (
-        <section className="card download-card">
-          <div className="dl-head">
-            <span className="dl-ico">⬇</span>
-            <div>
-              <h2>Install Scan Bridge on this computer</h2>
-              <p>
-                To scan, the small Scan Bridge app must run on the PC with the scanner.
-                It installs once and starts automatically.
-              </p>
-            </div>
+        <section className="card notice-card">
+          <div>
+            <h2>Bridge not running on this computer</h2>
+            <p>
+              To scan, install &amp; run the Scan Bridge app on the PC connected to the scanner.
+            </p>
           </div>
-          <div className="dl-actions">
-            <a
-              className="btn primary big"
-              href={`/downloads/${(dl?.files?.[detectedOS]?.file) || FALLBACK_DL[detectedOS]}`}
-              download
-            >
-              ⬇ Download for {OS_LABEL[detectedOS]}
-            </a>
-            <div className="dl-others">
-              <span>Other systems:</span>
-              {Object.keys(OS_LABEL)
-                .filter((k) => k !== detectedOS)
-                .map((k) => (
-                  <a key={k} href={`/downloads/${(dl?.files?.[k]?.file) || FALLBACK_DL[k]}`} download>
-                    {OS_LABEL[k]}
-                  </a>
-                ))}
-            </div>
-          </div>
+          <a className="btn primary" href="/download">Get Scan Bridge →</a>
         </section>
       )}
 
