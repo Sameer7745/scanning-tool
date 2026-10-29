@@ -47,15 +47,34 @@ const NAPS2_DEFAULT_DRIVER =
 
 function canRun(cmd, args) {
   try {
-    const r = spawnSync(cmd, args, { timeout: 8000 });
+    // windowsHide stops a console window from flashing when we probe NAPS2.
+    const r = spawnSync(cmd, args, { timeout: 8000, windowsHide: true });
     return r.status === 0 || r.status === null ? r.error == null : false;
   } catch {
     return false;
   }
 }
 
+// Cache the detected backend briefly so we don't spawn NAPS2 on every request
+// (which, on Windows, is what caused repeated console pop-ups).
+let _backendCache = { value: null, at: 0 };
+const BACKEND_TTL = 15000;
+/** Clear the cached backend (e.g. right after installing a driver). */
+export function resetBackendCache() {
+  _backendCache = { value: null, at: 0 };
+}
+
 /** Returns { backend: 'escl'|'naps2'|'scanimage'|'mock', command: string|null }. */
 export function detectBackend() {
+  if (_backendCache.value && Date.now() - _backendCache.at < BACKEND_TTL) {
+    return _backendCache.value;
+  }
+  const result = detectBackendUncached();
+  _backendCache = { value: result, at: Date.now() };
+  return result;
+}
+
+function detectBackendUncached() {
   if (process.env.MOCK === "1") return { backend: "mock", command: null };
 
   // SCAN_MODE flag (from .env): usb | wireless | auto (default).
@@ -111,7 +130,7 @@ export function listDevices() {
   }
 
   if (backend === "scanimage") {
-    const r = spawnSync(command, ["-L"], { encoding: "utf8", timeout: 15000 });
+    const r = spawnSync(command, ["-L"], { encoding: "utf8", timeout: 15000, windowsHide: true });
     const out = (r.stdout || "") + (r.stderr || "");
     // Lines look like: device `epson2:net:...' is a Epson ...
     const devices = [];
@@ -139,6 +158,7 @@ export function listDevices() {
       const r = spawnSync(command, [...prefix, "--listdevices", "--driver", d], {
         encoding: "utf8",
         timeout: 20000,
+        windowsHide: true,
       });
       const out = (r.stdout || "").trim();
       if (out) {
@@ -209,7 +229,7 @@ export function startScan(opts = {}) {
     args = [...naps2Prefix(command), ...buildNaps2Args({ dir, mode, dpi, opts: resolved })];
   }
 
-  const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
   // Return command+args so the caller can log exactly what ran (debugging).
   return { dir, backend, child, command, args };
 }
@@ -223,12 +243,13 @@ export function diagnostics() {
     info.command = command;
     // Backend version string, best-effort.
     if (backend === "scanimage") {
-      const r = spawnSync(command, ["--version"], { encoding: "utf8", timeout: 8000 });
+      const r = spawnSync(command, ["--version"], { encoding: "utf8", timeout: 8000, windowsHide: true });
       info.backendVersion = (r.stdout || r.stderr || "").split("\n")[0]?.trim();
     } else if (backend === "naps2") {
       const r = spawnSync(command, [...naps2Prefix(command), "--help"], {
         encoding: "utf8",
         timeout: 8000,
+        windowsHide: true,
       });
       info.backendVersion = (r.stdout || "").split("\n")[0]?.trim();
     }

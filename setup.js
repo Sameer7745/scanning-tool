@@ -8,7 +8,7 @@ import { detectBackend } from "./scanner.js";
 function hasCmd(cmd) {
   const probe = process.platform === "win32" ? "where" : "which";
   try {
-    return spawnSync(probe, [cmd], { timeout: 6000 }).status === 0;
+    return spawnSync(probe, [cmd], { timeout: 6000, windowsHide: true }).status === 0;
   } catch {
     return false;
   }
@@ -60,7 +60,7 @@ export function installCommand() {
 export function runInstall(onDone) {
   const cmd = installCommand();
   if (!cmd) return onDone(new Error("No automatic installer on this platform."));
-  const child = spawn(cmd[0], cmd[1], { stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(cmd[0], cmd[1], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
   let out = "";
   const grab = (d) => (out += d.toString());
   child.stdout.on("data", grab);

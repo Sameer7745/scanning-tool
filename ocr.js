@@ -22,7 +22,7 @@ export function tesseractCmd() {
   for (const c of TESS_CANDIDATES) {
     const isPath = c.includes("/");
     if (isPath && !existsSync(c)) continue;
-    const r = spawnSync(c, ["--version"], { timeout: 8000 });
+    const r = spawnSync(c, ["--version"], { timeout: 8000, windowsHide: true });
     if (!r.error && (r.status === 0 || r.status === null)) {
       _cmd = c;
       return c;
@@ -40,7 +40,7 @@ export function ocrAvailable() {
 export function installedLanguages() {
   const cmd = tesseractCmd();
   if (!cmd) return [];
-  const r = spawnSync(cmd, ["--list-langs"], { encoding: "utf8", timeout: 10000 });
+  const r = spawnSync(cmd, ["--list-langs"], { encoding: "utf8", timeout: 10000, windowsHide: true });
   const out = (r.stdout || "") + (r.stderr || "");
   return out
     .split("\n")
@@ -69,6 +69,7 @@ export function ocrImageToText(imagePath, lang) {
     encoding: "utf8",
     timeout: 120000,
     maxBuffer: 20 * 1024 * 1024,
+    windowsHide: true,
   });
   return (r.stdout || "").trim();
 }
@@ -88,6 +89,7 @@ export function buildSearchablePdf(imagePaths, outDir, lang) {
   const r = spawnSync(cmd, [listFile, outBase, "-l", l, "pdf"], {
     encoding: "utf8",
     timeout: 300000,
+    windowsHide: true,
   });
   const pdf = `${outBase}.pdf`;
   if (r.status === 0 && existsSync(pdf)) return pdf;

@@ -31,7 +31,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { detectBackend, listDevices, startScan, diagnostics } from "./scanner.js";
+import { detectBackend, listDevices, startScan, diagnostics, resetBackendCache } from "./scanner.js";
 import { resolveScannerUrl, esclReachable, discoverScanners } from "./escl.js";
 import { getConfig, setConfig } from "./config.js";
 import { setupInfo, runInstall } from "./setup.js";
@@ -144,6 +144,7 @@ app.post("/api/setup/install", (_req, res) => {
       log.error("setup", "install failed", String(err.message || err));
       return res.status(500).json({ ok: false, error: String(err.message || err) });
     }
+    resetBackendCache(); // re-detect NAPS2 right away after installing it
     const after = setupInfo();
     log.info("setup", "install finished", { code: result.code, installed: after.installed });
     res.json({ ok: after.installed || result.code === 0, installed: after.installed, backend: after.backend, output: result.output });
@@ -449,7 +450,7 @@ app.listen(PORT, () => {
   if (shouldOpen && hasBuiltUI) {
     const url = `http://localhost:${PORT}`;
     try {
-      if (process.platform === "win32") _spawn("cmd", ["/c", "start", "", url], { detached: true, stdio: "ignore" }).unref();
+      if (process.platform === "win32") _spawn("cmd", ["/c", "start", "", url], { detached: true, stdio: "ignore", windowsHide: true }).unref();
       else if (process.platform === "darwin") _spawn("open", [url], { detached: true, stdio: "ignore" }).unref();
       else _spawn("xdg-open", [url], { detached: true, stdio: "ignore" }).unref();
     } catch {}
