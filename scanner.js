@@ -58,12 +58,27 @@ function canRun(cmd, args) {
 export function detectBackend() {
   if (process.env.MOCK === "1") return { backend: "mock", command: null };
 
-  // Deploy config: point straight at a network scanner by URL/IP — no drivers.
-  // e.g. SCANNER_URL=http://192.168.1.36/eSCL  (or just the IP).
-  if (process.env.SCANNER_URL) {
-    return { backend: "escl", command: esclBase(process.env.SCANNER_URL) };
+  // SCAN_MODE flag (from .env): usb | wireless | auto (default).
+  //   usb      -> always use the local USB scanner (NAPS2 / SANE); ignore network.
+  //   wireless -> always use the network scanner (eSCL discovery).
+  //   auto     -> wireless if SCANNER_URL/SCANNER_NAME is set, else USB.
+  const mode = (process.env.SCAN_MODE || "auto").toLowerCase();
+
+  const wantWireless =
+    mode === "wireless" ||
+    (mode === "auto" && (process.env.SCANNER_URL || process.env.SCANNER_NAME));
+
+  // Wireless (eSCL) — no drivers. Finds the scanner by URL/name/discovery.
+  //   SCANNER_URL=http://192.168.1.36/eSCL   fixed IP (auto-rediscovers if it moves)
+  //   SCANNER_NAME="HP Smart Tank"            discover by name (survives IP changes)
+  if (mode !== "usb" && wantWireless) {
+    const url = process.env.SCANNER_URL;
+    const command =
+      url && url.toLowerCase() !== "auto" ? esclBase(url) : "auto (network discovery)";
+    return { backend: "escl", command };
   }
 
+  // --- USB / local path (SCAN_MODE=usb, or auto with no network config) ---
   // Explicit overrides win: SCAN_BACKEND=naps2|scanimage, SCAN_CMD=<path>.
   if (process.env.SCAN_CMD) {
     const backend = process.env.SCAN_BACKEND || "naps2";
@@ -109,12 +124,15 @@ export function listDevices() {
 
   if (backend === "naps2") {
     // NAPS2 needs a driver to enumerate; try the platform defaults.
+    // Only the LOCAL/USB drivers here — network scanning is handled by our own
+    // eSCL backend (SCAN_MODE=wireless), and enumerating NAPS2's network driver
+    // is slow/can hang, which we avoid.
     const drivers =
       process.platform === "win32"
-        ? ["wia", "twain", "escl"] // WIA = inbox driver; escl = driverless network
+        ? ["wia", "twain"]
         : process.platform === "darwin"
-        ? ["apple", "escl"]
-        : ["sane", "escl"];
+        ? ["apple"]
+        : ["sane"];
     const devices = [];
     const prefix = naps2Prefix(command);
     for (const d of drivers) {

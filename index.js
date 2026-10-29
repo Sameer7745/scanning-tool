@@ -10,6 +10,12 @@
 //                 event "done"  data {count}
 //                 event "error" data {message}
 
+// Load .env (next to the binary/app) before anything reads process.env.
+import dotenv from "dotenv";
+import { ENV_FILE, ensureEnvFile, findWebDist } from "./runtime.js";
+ensureEnvFile();
+dotenv.config({ path: ENV_FILE });
+
 import express from "express";
 import cors from "cors";
 import {
@@ -25,6 +31,8 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { detectBackend, listDevices, startScan, diagnostics } from "./scanner.js";
+import { resolveScannerUrl, esclReachable, discoverScanners } from "./escl.js";
+import { getConfig, setConfig } from "./config.js";
 import {
   ocrAvailable,
   installedLanguages,
@@ -37,6 +45,23 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 app.use(cors());
+
+// Private Network Access: when a page on a public/remote origin (e.g. your VPS
+// app) calls this local bridge, Chrome sends a preflight asking permission to
+// reach a private/localhost address. Acknowledge it so the call isn't blocked.
+// (Chrome still requires the calling PAGE to be HTTPS — serve your app over
+// https for this to take effect.)
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Private-Network", "true");
+  if (req.method === "OPTIONS") {
+    res.setHeader("Access-Control-Allow-Origin", req.headers.origin || "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", req.headers["access-control-request-headers"] || "*");
+    return res.sendStatus(204);
+  }
+  next();
+});
+
 app.use(express.json({ limit: "80mb" })); // scanned images are large
 
 // Request logging (debug level, so production stays quiet unless DEBUG=1).
@@ -61,8 +86,21 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
-app.get("/api/devices", (_req, res) => {
+app.get("/api/devices", async (_req, res) => {
   try {
+    const { backend } = detectBackend();
+    if (backend === "escl") {
+      // Discover live scanners on the network (finds the current IP).
+      const list = await discoverScanners(process.env.SCANNER_NAME || "");
+      const devices = list.map((s) => ({ id: s.url, name: `${s.name} (${s.ip})` }));
+      // If none discovered but a URL is configured, still offer it.
+      if (!devices.length) {
+        const url = await resolveScannerUrl();
+        if (url) devices.push({ id: url, name: `Network scanner (${url})` });
+      }
+      log.debug("devices", `escl discovered ${devices.length}`, devices);
+      return res.json({ backend, devices });
+    }
     const d = listDevices();
     log.debug("devices", `found ${d.devices?.length || 0}`, d.devices);
     res.json(d);
@@ -72,12 +110,68 @@ app.get("/api/devices", (_req, res) => {
   }
 });
 
+// --- Bridge control UI endpoints ---
+
+// Current settings (scan mode, scanner name/url, port).
+app.get("/api/config", (_req, res) => res.json(getConfig()));
+
+// Change settings (scan mode / scanner). Takes effect immediately + persists.
+app.post("/api/config", (req, res) => {
+  try {
+    const cfg = setConfig(req.body || {});
+    log.info("config", "updated", cfg);
+    res.json(cfg);
+  } catch (e) {
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+// Live connection status for the UI: is a scanner connected right now?
+app.get("/api/status", async (_req, res) => {
+  const { backend } = detectBackend();
+  const mode = (process.env.SCAN_MODE || "auto").toLowerCase();
+  const out = { backend, mode, connected: false, scanner: null, detail: "" };
+  try {
+    if (backend === "escl") {
+      const url = await resolveScannerUrl();
+      out.connected = url ? await esclReachable(url) : false;
+      out.scanner = url || null;
+      out.detail = out.connected ? "reachable" : "no scanner found on the network";
+    } else if (backend === "naps2" || backend === "scanimage") {
+      const { devices } = listDevices();
+      out.connected = devices.length > 0;
+      out.scanner = devices[0]?.name || null;
+      out.detail = out.connected ? "USB scanner detected" : "no USB scanner detected";
+    } else if (backend === "mock") {
+      out.connected = true;
+      out.scanner = "Mock scanner (sample image)";
+      out.detail = "no scanner backend installed — mock mode";
+    }
+  } catch (e) {
+    out.detail = String(e.message || e);
+  }
+  res.json(out);
+});
+
 // One-stop diagnostics: backend, version, detected devices, OCR, errors.
 // Visit http://<server>:3001/api/diagnostics to see why scanning may be failing.
-app.get("/api/diagnostics", (_req, res) => {
+app.get("/api/diagnostics", async (_req, res) => {
   const d = diagnostics();
   d.ocr = { available: ocrAvailable(), enabled: OCR_ENABLED };
   d.logLevel = log.level;
+  // For the network backend, resolve the scanner's CURRENT address live so the
+  // report is accurate even if the IP changed.
+  if (d.backend === "escl") {
+    try {
+      const url = await resolveScannerUrl();
+      d.scannerUrl = url || null;
+      d.scannerReachable = url ? await esclReachable(url) : false;
+      const discovered = await discoverScanners(process.env.SCANNER_NAME || "");
+      d.discovered = discovered.map((s) => ({ name: s.name, ip: s.ip, url: s.url }));
+    } catch (e) {
+      d.scannerError = String(e.message || e);
+    }
+  }
   log.info("diag", "diagnostics requested", d);
   res.json(d);
 });
@@ -285,9 +379,8 @@ app.get("/api/scan", (req, res) => {
 // --- Serve the built web UI (web/dist) if it exists, so the customer runs ONE
 // process and opens ONE URL (http://localhost:3001). Falls back silently to
 // API-only mode (dev uses the Vite server on :5173 instead).
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const WEB_DIST = join(__dirname, "..", "web", "dist");
-const hasBuiltUI = existsSync(join(WEB_DIST, "index.html"));
+const WEB_DIST = findWebDist();
+const hasBuiltUI = !!WEB_DIST;
 if (hasBuiltUI) {
   app.use(express.static(WEB_DIST));
   // SPA fallback: anything not under /api returns index.html.
@@ -306,6 +399,7 @@ app.listen(PORT, () => {
   const { backend } = detectBackend();
   console.log(`\n  Scanner bridge running:  http://localhost:${PORT}`);
   if (hasBuiltUI) console.log(`  Open the app at:         http://localhost:${PORT}`);
+  console.log(`  Scan mode:               ${(process.env.SCAN_MODE || "auto").toLowerCase()}`);
   console.log(`  Detected backend:        ${backend}  (platform: ${process.platform})`);
   console.log(
     `  OCR:                     ${OCR_ENABLED ? "enabled" : "disabled (plain image scanning)"}`
