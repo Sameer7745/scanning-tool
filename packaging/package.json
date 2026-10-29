@@ -1,0 +1,16 @@
+{
+  "name": "scan-bridge-packaging",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Build the bridge into single-file executables (Windows/macOS/Linux).",
+  "scripts": {
+    "bundle": "node build.mjs",
+    "pkg": "node pkg.mjs",
+    "build": "node build.mjs && node pkg.mjs"
+  },
+  "devDependencies": {
+    "@yao-pkg/pkg": "^6.3.0",
+    "esbuild": "^0.21.5"
+  }
+}
