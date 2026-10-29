@@ -14,6 +14,7 @@
 import dotenv from "dotenv";
 import { ENV_FILE, ensureEnvFile, findWebDist, PACKAGED } from "./runtime.js";
 import { spawn as _spawn } from "node:child_process";
+import { startTray } from "./tray.js";
 ensureEnvFile();
 dotenv.config({ path: ENV_FILE });
 
@@ -451,16 +452,24 @@ app.listen(PORT, () => {
   }
   log.info("startup", "bridge ready", { port: PORT, backend, ocr: OCR_ENABLED, ui: hasBuiltUI });
 
-  // Open the panel in the default browser so the user sees the UI (not a console).
-  // On by default for the packaged app; set OPEN_BROWSER=0 to disable.
-  const shouldOpen =
-    process.env.OPEN_BROWSER === "1" || (PACKAGED && process.env.OPEN_BROWSER !== "0");
-  if (shouldOpen && hasBuiltUI) {
-    const url = `http://localhost:${PORT}`;
+  // Open the panel in the default browser.
+  const url = `http://localhost:${PORT}`;
+  const openPanel = () => {
     try {
       if (process.platform === "win32") _spawn("cmd", ["/c", "start", "", url], { detached: true, stdio: "ignore", windowsHide: true }).unref();
       else if (process.platform === "darwin") _spawn("open", [url], { detached: true, stdio: "ignore" }).unref();
       else _spawn("xdg-open", [url], { detached: true, stdio: "ignore" }).unref();
     } catch {}
+  };
+
+  // Auto-open on launch (packaged app by default; OPEN_BROWSER=0 to disable).
+  const shouldOpen =
+    process.env.OPEN_BROWSER === "1" || (PACKAGED && process.env.OPEN_BROWSER !== "0");
+  if (shouldOpen && hasBuiltUI) openPanel();
+
+  // System-tray icon (Open / Quit). On for the packaged app; TRAY=1 to force in
+  // dev, TRAY=0 to disable. Never fatal if it can't start.
+  if (process.env.TRAY === "1" || (PACKAGED && process.env.TRAY !== "0")) {
+    startTray({ onOpen: openPanel, onQuit: () => process.exit(0) });
   }
 });

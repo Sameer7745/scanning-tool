@@ -9,7 +9,7 @@
 //   WEB_DIST=/var/www/.../web/dist npm run bundle
 
 import { build } from "esbuild";
-import { cpSync, mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { cpSync, mkdirSync, rmSync, writeFileSync, existsSync, chmodSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -60,11 +60,19 @@ cpSync(webDist, join(out, "web"), {
   filter: (src) => !/ScanBridge-[^/\\]*$/.test(src),
 });
 
+console.log("• copying tray helper binaries -> dist-bin/traybin/");
+const traybinSrc = join(serverDir, "node_modules", "systray2", "traybin");
+if (existsSync(traybinSrc)) {
+  cpSync(traybinSrc, join(out, "traybin"), { recursive: true });
+  for (const f of readdirSync(join(out, "traybin"))) { try { chmodSync(join(out, "traybin", f), 0o755); } catch {} }
+}
+else console.warn("  (systray2 traybin not found — run npm install in server/)");
+
 console.log("• writing pkg config -> dist-bin/package.json");
 writeFileSync(
   join(out, "package.json"),
   JSON.stringify(
-    { name: "scan-bridge", version: "1.0.0", bin: "bridge.cjs", pkg: { assets: ["web/**/*"] } },
+    { name: "scan-bridge", version: "1.0.0", bin: "bridge.cjs", pkg: { assets: ["web/**/*", "traybin/**/*"] } },
     null,
     2
   )
