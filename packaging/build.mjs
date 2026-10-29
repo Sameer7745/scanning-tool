@@ -54,7 +54,11 @@ await build({
 });
 
 console.log("• copying web UI -> dist-bin/web/");
-cpSync(webDist, join(out, "web"), { recursive: true });
+// Exclude any downloadable binaries so the exe never embeds copies of itself.
+cpSync(webDist, join(out, "web"), {
+  recursive: true,
+  filter: (src) => !/ScanBridge-[^/\\]*$/.test(src),
+});
 
 console.log("• writing pkg config -> dist-bin/package.json");
 writeFileSync(
