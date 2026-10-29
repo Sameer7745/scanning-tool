@@ -36,6 +36,7 @@ export default function App() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [setup, setSetup] = useState(null); // {installed, canAutoInstall, method, pkg, manualUrl}
   const [installing, setInstalling] = useState(false);
+  const [stopped, setStopped] = useState(false);
   const esRef = useRef(null);
   const pageCounter = useRef(0);
   const scanIndexToUid = useRef({});
@@ -80,6 +81,17 @@ export default function App() {
     } finally {
       setInstalling(false);
     }
+  }
+
+  async function quitBridge() {
+    if (!window.confirm("Stop the Scan Bridge app on this computer?")) return;
+    try {
+      await fetch(`${base}/api/quit`, { method: "POST" });
+    } catch {
+      /* the process exits before/while responding — that's expected */
+    }
+    stopScan();
+    setStopped(true);
   }
 
   async function refreshStatus() {
@@ -215,6 +227,19 @@ export default function App() {
   const anyText = pages.some((p) => p.text);
   const connected = !!connState?.connected;
   const modeLabel = { usb: "USB", wireless: "Wireless", auto: "Auto" }[cfg?.scanMode] || "—";
+
+  if (stopped) {
+    return (
+      <div className="app stopped">
+        <div className="stopped-card">
+          <div className="stopped-ico">⏻</div>
+          <h2>Scan Bridge stopped</h2>
+          <p>The app has been shut down on this computer. You can close this tab.</p>
+          <p className="stopped-sub">To scan again, start Scan Bridge from the desktop or Start menu.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="app">
@@ -429,6 +454,10 @@ export default function App() {
               </div>
             </div>
             {savingCfg && <span className="chip">saving…</span>}
+            <div className="field grow quit-field">
+              <label>Stop the app</label>
+              <button className="btn danger" onClick={quitBridge}>⏻ Quit Scan Bridge</button>
+            </div>
           </div>
         )}
       </section>
