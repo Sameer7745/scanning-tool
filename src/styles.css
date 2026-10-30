@@ -112,7 +112,8 @@ body {
 }
 :root[data-theme="dark"] .notice-card { background: var(--surface); }
 .notice-card h2 { margin: 0; font-size: 16px; }
-.notice-card p { margin: 4px 0 0; font-size: 13px; color: var(--muted); }
+.notice-card p { margin: 4px 0 0; font-size: 13px; color: var(--muted); max-width: 440px; }
+.notice-actions { display: flex; gap: 10px; flex-wrap: wrap; flex: none; }
 
 /* ===== Download page ===== */
 .dlpage { max-width: 680px; margin: 0 auto; padding: 28px 18px 60px; }

@@ -227,6 +227,10 @@ export default function App() {
   const anyText = pages.some((p) => p.text);
   const connected = !!connState?.connected;
   const modeLabel = { usb: "USB", wireless: "Wireless", auto: "Auto" }[cfg?.scanMode] || "—";
+  // "Hosted" = this page is NOT served from the local bridge (so localhost calls
+  // may be blocked by the browser; hand off to the local panel instead).
+  const host = typeof window !== "undefined" ? window.location.hostname : "";
+  const isHosted = host !== "localhost" && host !== "127.0.0.1" && host !== "";
 
   if (stopped) {
     return (
@@ -260,16 +264,29 @@ export default function App() {
         </div>
       </header>
 
-      {/* When the bridge isn't reachable, point to the install page (no inline download) */}
+      {/* When the bridge isn't reachable from this (hosted) page, hand off to the
+          local panel at localhost:3001, which is same-origin and never blocked
+          by the browser's local-network restrictions. */}
       {!health && (
         <section className="card notice-card">
           <div>
-            <h2>Bridge not running on this computer</h2>
+            <h2>
+              {isHosted ? "Can’t reach the scanner app from this page" : "Scan Bridge isn’t running"}
+            </h2>
             <p>
-              To scan, install &amp; run the Scan Bridge app on the PC connected to the scanner.
+              {isHosted
+                ? "Your browser blocks this website from talking to the local scanner app. Open the scanner panel directly on this computer:"
+                : "To scan, install & run the Scan Bridge app on the PC connected to the scanner."}
             </p>
           </div>
-          <a className="btn primary" href="/download">Get Scan Bridge →</a>
+          <div className="notice-actions">
+            {isHosted && (
+              <a className="btn primary" href="http://localhost:3001">Open scanner panel →</a>
+            )}
+            <a className={`btn ${isHosted ? "ghost" : "primary"}`} href="/download">
+              Get Scan Bridge
+            </a>
+          </div>
         </section>
       )}
 
