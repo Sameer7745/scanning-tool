@@ -47,23 +47,19 @@ import { log } from "./logger.js";
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(cors());
-
-// Private Network Access: when a page on a public/remote origin (e.g. your VPS
-// app) calls this local bridge, Chrome sends a preflight asking permission to
-// reach a private/localhost address. Acknowledge it so the call isn't blocked.
-// (Chrome still requires the calling PAGE to be HTTPS — serve your app over
-// https for this to take effect.)
+// Private Network Access: a page on a public/HTTPS origin (the VPS panel) calling
+// this local bridge triggers a PNA preflight for the "loopback address space".
+// The ACK header MUST be set BEFORE cors() answers the OPTIONS preflight, or the
+// preflight response lacks it and the browser denies the request.
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Private-Network", "true");
-  if (req.method === "OPTIONS") {
-    res.setHeader("Access-Control-Allow-Origin", req.headers.origin || "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", req.headers["access-control-request-headers"] || "*");
-    return res.sendStatus(204);
-  }
+  // Newer Chrome "Local Network Access" spelling (harmless if unused):
+  res.setHeader("Access-Control-Allow-Local-Network", "true");
   next();
 });
+
+app.use(cors());
+app.options(/.*/, cors()); // make sure every OPTIONS preflight is answered (with the PNA header above)
 
 app.use(express.json({ limit: "80mb" })); // scanned images are large
 
