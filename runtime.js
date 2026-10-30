@@ -6,7 +6,7 @@
 
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -25,24 +25,6 @@ export function findWebDist() {
   return candidates.find((p) => existsSync(join(p, "index.html"))) || null;
 }
 
-/** Path to the writable .env (next to the binary when packaged). */
+// Path to the .env (next to the binary when packaged). Loaded if present, and
+// written only when a setting is changed from the panel — never auto-created.
 export const ENV_FILE = join(APP_DIR, ".env");
-
-/** On first run of a packaged build, create a default .env if none exists. */
-export function ensureEnvFile() {
-  if (existsSync(ENV_FILE)) return;
-  const def = [
-    "# Scan Bridge configuration (edit and restart).",
-    "# usb | wireless | auto",
-    "SCAN_MODE=usb",
-    "PORT=3001",
-    "# SCANNER_NAME=HP Smart Tank",
-    "# OCR_ENABLED=1",
-    "",
-  ].join("\n");
-  try {
-    writeFileSync(ENV_FILE, def);
-  } catch {
-    /* read-only location — fall back to process env defaults */
-  }
-}

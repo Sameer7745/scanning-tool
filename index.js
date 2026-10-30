@@ -10,12 +10,13 @@
 //                 event "done"  data {count}
 //                 event "error" data {message}
 
-// Load .env (next to the binary/app) before anything reads process.env.
+// Load .env (next to the binary/app) IF it exists — never create one. The app
+// runs on built-in defaults (SCAN_MODE auto/usb, PORT 3001); a .env is written
+// only if someone changes a setting from the panel.
 import dotenv from "dotenv";
-import { ENV_FILE, ensureEnvFile, findWebDist, PACKAGED } from "./runtime.js";
+import { ENV_FILE, findWebDist, PACKAGED } from "./runtime.js";
 import { spawn as _spawn } from "node:child_process";
 import { startTray } from "./tray.js";
-ensureEnvFile();
 dotenv.config({ path: ENV_FILE });
 
 import express from "express";
