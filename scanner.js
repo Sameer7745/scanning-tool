@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { esclBase, startEsclScan } from "./escl.js";
+import { log } from "./logger.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -55,22 +56,40 @@ function canRun(cmd, args) {
   }
 }
 
-// Cache the detected backend briefly so we don't spawn NAPS2 on every request
-// (which, on Windows, is what caused repeated console pop-ups).
-let _backendCache = { value: null, at: 0 };
-const BACKEND_TTL = 15000;
-/** Clear the cached backend (e.g. right after installing a driver). */
+/** The command's help output, or null if it can't be run. */
+function helpText(cmd, args) {
+  try {
+    const r = spawnSync(cmd, args, { encoding: "utf8", timeout: 8000, windowsHide: true });
+    if (r.error != null || (r.status !== 0 && r.status !== null)) return null;
+    return (r.stdout || "") + (r.stderr || "");
+  } catch {
+    return null;
+  }
+}
+
+// Cache the detected backend so we don't spawn NAPS2 on every request (which,
+// on Windows, is what caused repeated console pop-ups, and each probe blocks the
+// bridge). A found backend doesn't go away, so it is kept until the scan mode
+// changes; only "mock" is re-checked, so a freshly installed NAPS2 is picked up.
+let _backendCache = { value: null, at: 0, key: "" };
+const MOCK_TTL = 15000;
+/** Clear the cached backend and devices (e.g. right after installing a driver). */
 export function resetBackendCache() {
-  _backendCache = { value: null, at: 0 };
+  _backendCache = { value: null, at: 0, key: "" };
+  resetDeviceCache();
 }
 
 /** Returns { backend: 'escl'|'naps2'|'scanimage'|'mock', command: string|null }. */
 export function detectBackend() {
-  if (_backendCache.value && Date.now() - _backendCache.at < BACKEND_TTL) {
-    return _backendCache.value;
+  // Settings that change which backend is picked (editable from the panel).
+  const key = [process.env.MOCK, process.env.SCAN_MODE, process.env.SCANNER_URL, process.env.SCANNER_NAME, process.env.SCAN_CMD].join("|");
+  const cached = _backendCache.value;
+  if (cached && _backendCache.key === key && (cached.backend !== "mock" || Date.now() - _backendCache.at < MOCK_TTL)) {
+    return cached;
   }
   const result = detectBackendUncached();
-  _backendCache = { value: result, at: Date.now() };
+  if (cached && cached.backend !== result.backend) resetDeviceCache();
+  _backendCache = { value: result, at: Date.now(), key };
   return result;
 }
 
@@ -112,7 +131,9 @@ function detectBackendUncached() {
     // the "NAPS2.Console[.exe]" binary (Windows) takes flags directly.
     const base = c.replace(/\\/g, "/").split("/").pop().toLowerCase();
     const probe = base.includes("console") ? ["--help"] : ["console", "--help"];
-    if (canRun(c, probe)) return { backend: "naps2", command: c };
+    const help = helpText(c, probe);
+    // Older NAPS2 versions reject --noprofile, so only pass it where it exists.
+    if (help !== null) return { backend: "naps2", command: c, noProfile: help.includes("--noprofile") };
   }
   if (canRun(SCANIMAGE, ["--version"])) {
     return { backend: "scanimage", command: SCANIMAGE };
@@ -120,57 +141,155 @@ function detectBackendUncached() {
   return { backend: "mock", command: null };
 }
 
-/** List available scanner devices (best-effort; UI treats this as optional). */
-export function listDevices() {
-  const { backend, command } = detectBackend();
+// --- Device list ---------------------------------------------------------
+// Listing USB scanners through NAPS2 is slow (TWAIN on Windows can take 5-15 s
+// per driver), so it runs as a background process (never blocking the bridge),
+// one listing at a time, and the result is cached. /api/status answers from the
+// cache, so the panel's status check can't time out and flip to "Offline".
+const DEVICE_TTL = 10000;
+const LIST_TIMEOUT = 30000; // per driver
+let _devices = null; // { backend, devices, at, timedOut }
+let _listing = null; // the listing in progress, shared by every caller
+let _lastDevice = null; // the last scanner seen, so a scan never runs without --device
+let _naps2Driver = null; // the driver that found the scanner, asked first next time
+let _scansRunning = 0;
 
+export function resetDeviceCache() {
+  _devices = null;
+}
+
+/** The last device list, or null if none has finished yet. Never starts a listing. */
+export function cachedDevices() {
+  return _devices;
+}
+
+/** A scan is running: don't list devices meanwhile (a busy scanner lists as absent). */
+export function scanStarted() {
+  _scansRunning += 1;
+}
+export function scanEnded() {
+  _scansRunning = Math.max(0, _scansRunning - 1);
+}
+
+/** Runs a command without blocking the bridge. Resolves to { code, out, err, timedOut }. */
+function runAsync(command, args, timeoutMs) {
+  return new Promise((resolve) => {
+    let out = "";
+    let err = "";
+    let timedOut = false;
+    let settled = false;
+    const end = (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ code, out, err, timedOut });
+    };
+    let child;
+    try {
+      child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    } catch (e) {
+      err = String(e.message || e);
+      return resolve({ code: null, out, err, timedOut });
+    }
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        child.kill();
+      } catch {}
+    }, timeoutMs);
+    child.stdout.on("data", (d) => (out += d.toString()));
+    child.stderr.on("data", (d) => (err += d.toString()));
+    child.on("error", (e) => {
+      err += String(e.message || e);
+      end(null);
+    });
+    child.on("close", (code) => end(code));
+  });
+}
+
+async function enumerateDevices(backend, command) {
   if (backend === "escl") {
-    // Configured network scanner — report it without a (blocking) live fetch.
-    return { backend, devices: [{ id: command, name: `Network scanner (${command})` }] };
+    // Configured network scanner — report it without a live fetch.
+    return { devices: [{ id: command, name: `Network scanner (${command})` }] };
   }
 
   if (backend === "scanimage") {
-    const r = spawnSync(command, ["-L"], { encoding: "utf8", timeout: 15000, windowsHide: true });
-    const out = (r.stdout || "") + (r.stderr || "");
+    const r = await runAsync(command, ["-L"], LIST_TIMEOUT);
     // Lines look like: device `epson2:net:...' is a Epson ...
     const devices = [];
-    for (const line of out.split("\n")) {
+    for (const line of (r.out + r.err).split("\n")) {
       const m = line.match(/device `([^']+)'\s+is a\s+(.*)/i);
       if (m) devices.push({ id: m[1], name: m[2].trim() });
     }
-    return { backend, devices };
+    return { devices, timedOut: r.timedOut };
   }
 
   if (backend === "naps2") {
-    // NAPS2 needs a driver to enumerate; try the platform defaults.
+    // NAPS2 needs a driver to enumerate; try the platform defaults, the one that
+    // found the scanner last time first, and stop at the first that finds one.
     // Only the LOCAL/USB drivers here — network scanning is handled by our own
     // eSCL backend (SCAN_MODE=wireless), and enumerating NAPS2's network driver
     // is slow/can hang, which we avoid.
-    const drivers =
+    let drivers =
       process.platform === "win32"
         ? ["wia", "twain"]
         : process.platform === "darwin"
         ? ["apple"]
         : ["sane"];
-    const devices = [];
+    if (_naps2Driver && drivers.includes(_naps2Driver)) {
+      drivers = [_naps2Driver, ...drivers.filter((d) => d !== _naps2Driver)];
+    }
     const prefix = naps2Prefix(command);
+    let timedOut = false;
     for (const d of drivers) {
-      const r = spawnSync(command, [...prefix, "--listdevices", "--driver", d], {
-        encoding: "utf8",
-        timeout: 20000,
-        windowsHide: true,
-      });
-      const out = (r.stdout || "").trim();
-      if (out) {
-        for (const name of out.split("\n").map((s) => s.trim()).filter(Boolean)) {
-          devices.push({ id: `${d}:${name}`, name: `${name} (${d})` });
-        }
+      const r = await runAsync(command, [...prefix, "--listdevices", "--driver", d], LIST_TIMEOUT);
+      if (r.timedOut) {
+        timedOut = true;
+        log.warn("devices", `NAPS2 --listdevices --driver ${d} timed out`);
+      }
+      const names = r.out.split("\n").map((s) => s.trim()).filter(Boolean);
+      if (names.length) {
+        _naps2Driver = d;
+        return { devices: names.map((name) => ({ id: `${d}:${name}`, name: `${name} (${d})` })) };
       }
     }
-    return { backend, devices };
+    return { devices: [], timedOut };
   }
 
-  return { backend, devices: [{ id: "mock", name: "Mock scanner (sample image)" }] };
+  return { devices: [{ id: "mock", name: "Mock scanner (sample image)" }] };
+}
+
+/**
+ * List available scanner devices. Resolves to { backend, devices, at, timedOut }.
+ * Answers from the cache when it is younger than `maxAgeMs` (or a scan is
+ * running); otherwise lists again, sharing a listing already in progress.
+ */
+export function listDevices({ maxAgeMs = DEVICE_TTL } = {}) {
+  const { backend, command } = detectBackend();
+  const cached = _devices && _devices.backend === backend ? _devices : null;
+  if (cached && (_scansRunning > 0 || Date.now() - cached.at < maxAgeMs)) return Promise.resolve(cached);
+  if (_scansRunning > 0) return Promise.resolve({ backend, devices: [], at: Date.now(), busy: true });
+  if (!_listing) {
+    _listing = enumerateDevices(backend, command)
+      .then((r) => {
+        // A listing that timed out says nothing about the scanner: keep what was seen before.
+        if (r.timedOut && !r.devices.length && cached && cached.devices.length) {
+          _devices = { ...cached, at: Date.now() };
+        } else {
+          _devices = { backend, devices: r.devices, at: Date.now(), timedOut: Boolean(r.timedOut) };
+        }
+        if (_devices.devices.length && backend !== "mock") _lastDevice = _devices.devices[0].id;
+        return _devices;
+      })
+      .catch((e) => {
+        log.error("devices", "listing failed", String(e.message || e));
+        return cached || { backend, devices: [], at: Date.now() };
+      })
+      .finally(() => {
+        _listing = null;
+      });
+  }
+  return _listing;
 }
 
 // The standalone "NAPS2" binary (macOS/Linux) needs the `console` subcommand;
@@ -178,6 +297,21 @@ export function listDevices() {
 function naps2Prefix(command) {
   const base = String(command).replace(/\\/g, "/").split("/").pop().toLowerCase();
   return base.includes("console") ? [] : ["console"];
+}
+
+// Source "auto" (no source sent): which source each scanner last scanned from.
+// A scanner that has only a feeder (e.g. HP ScanJet Enterprise Flow 9000 s1)
+// fails on the glass the first time; the scan is retried from the feeder (see
+// /api/scan) and from then on goes straight to the feeder. Kept in memory only.
+const autoSources = new Map();
+
+export function rememberAutoSource(key, source) {
+  if (key) autoSources.set(key, source);
+}
+
+/** The source to retry with when an "auto" scan returned no pages. */
+export function fallbackSource(source) {
+  return source === "glass" ? "feeder" : "glass";
 }
 
 /**
@@ -190,10 +324,12 @@ function naps2Prefix(command) {
  *   device: string|undefined
  * }
  *
- * Returns { dir, backend, child }  (child is null for the mock backend).
+ * Resolves to { dir, backend, child }  (child is null for the mock backend). When no
+ * source was given (auto), also { autoSource, deviceKey }: the source picked, and
+ * the key to remember it under if it works.
  */
-export function startScan(opts = {}) {
-  const { backend, command } = detectBackend();
+export async function startScan(opts = {}) {
+  const { backend, command, noProfile } = detectBackend();
   const mode = opts.mode === "continuous" ? "continuous" : "single";
   const dpi = Number(opts.dpi) > 0 ? Number(opts.dpi) : 200;
   const dir = mkdtempSync(join(tmpdir(), "scan-"));
@@ -202,40 +338,57 @@ export function startScan(opts = {}) {
     return { dir, backend, child: null, mock: runMock(dir, mode) };
   }
 
+  const autoDefault = mode === "continuous" ? "feeder" : "glass";
+
   if (backend === "escl") {
     // Direct network scan by URL/IP — pure HTTP, no child process.
+    const deviceKey = opts.source ? undefined : `escl:${command}`;
+    const autoSource = deviceKey ? autoSources.get(deviceKey) || autoDefault : undefined;
+    const source = opts.source || autoSource;
     const escl = startEsclScan(dir, {
       url: command,
       mode,
       dpi,
-      source: opts.source,
+      source,
     });
-    return { dir, backend, child: null, escl, command, args: [`mode=${mode}`, `dpi=${dpi}`] };
+    return { dir, backend, child: null, escl, command, args: [`mode=${mode}`, `dpi=${dpi}`, `source=${source}`], autoSource, deviceKey };
   }
 
   let args;
+  let autoSource;
+  let deviceKey;
   if (backend === "scanimage") {
+    // scanimage without --source uses the scanner's own default source, which
+    // already suits feeder-only scanners: no auto fallback needed.
     args = buildScanimageArgs({ dir, mode, dpi, opts });
   } else {
-    // NAPS2 requires an explicit device. If the UI didn't pick one, grab the
-    // first detected scanner for the default driver.
+    // NAPS2 requires an explicit device. If the UI didn't pick one, use the
+    // scanner already found (no fresh listing before every scan), else list now.
     const resolved = { ...opts };
     if (!resolved.device) {
-      try {
-        const { devices } = listDevices();
-        if (devices && devices.length) resolved.device = devices[0].id;
-      } catch {}
+      const { devices } = await listDevices({ maxAgeMs: Infinity });
+      resolved.device = (devices && devices[0] && devices[0].id) || _lastDevice || "";
     }
-    args = [...naps2Prefix(command), ...buildNaps2Args({ dir, mode, dpi, opts: resolved })];
+    if (!resolved.device) {
+      throw new Error(
+        "No scanner found. Check the scanner is switched on and its USB cable is connected to this computer, then try again."
+      );
+    }
+    if (!resolved.source) {
+      deviceKey = `naps2:${resolved.device || "default"}`;
+      autoSource = autoSources.get(deviceKey) || autoDefault;
+      resolved.source = autoSource;
+    }
+    args = [...naps2Prefix(command), ...buildNaps2Args({ dir, mode, dpi, opts: resolved, noProfile })];
   }
 
   const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
   // Return command+args so the caller can log exactly what ran (debugging).
-  return { dir, backend, child, command, args };
+  return { dir, backend, child, command, args, autoSource, deviceKey };
 }
 
-/** Full diagnostics snapshot for the /api/diagnostics endpoint. */
-export function diagnostics() {
+/** Full diagnostics snapshot for the /api/diagnostics endpoint (lists devices afresh). */
+export async function diagnostics() {
   const info = { platform: process.platform, node: process.version };
   try {
     const { backend, command } = detectBackend();
@@ -243,19 +396,19 @@ export function diagnostics() {
     info.command = command;
     // Backend version string, best-effort.
     if (backend === "scanimage") {
-      const r = spawnSync(command, ["--version"], { encoding: "utf8", timeout: 8000, windowsHide: true });
-      info.backendVersion = (r.stdout || r.stderr || "").split("\n")[0]?.trim();
+      const r = await runAsync(command, ["--version"], 8000);
+      info.backendVersion = (r.out || r.err).split("\n")[0]?.trim();
     } else if (backend === "naps2") {
-      const r = spawnSync(command, [...naps2Prefix(command), "--help"], {
-        encoding: "utf8",
-        timeout: 8000,
-        windowsHide: true,
-      });
-      info.backendVersion = (r.stdout || "").split("\n")[0]?.trim();
+      const r = await runAsync(command, [...naps2Prefix(command), "--help"], 8000);
+      info.backendVersion = (r.out.trim() || r.err).split("\n")[0]?.trim();
     }
-    const { devices } = listDevices();
-    info.devices = devices;
-    info.deviceCount = devices.length;
+    const started = Date.now();
+    const list = await listDevices({ maxAgeMs: 0 });
+    info.devices = list.devices;
+    info.deviceCount = list.devices.length;
+    info.listedInMs = Date.now() - started; // how slow listing is on this PC
+    if (list.timedOut) info.listTimedOut = true;
+    if (list.busy) info.listSkipped = "a scan is running";
   } catch (e) {
     info.error = String(e && e.message ? e.message : e);
   }
@@ -294,7 +447,7 @@ function buildScanimageArgs({ dir, mode, dpi, opts }) {
   return args;
 }
 
-function buildNaps2Args({ dir, mode, dpi, opts }) {
+function buildNaps2Args({ dir, mode, dpi, opts, noProfile }) {
   // NAPS2 uses the $(n) placeholder to number multi-page output.
   const output = join(dir, "page-$(n).jpg");
 
@@ -313,6 +466,9 @@ function buildNaps2Args({ dir, mode, dpi, opts }) {
   // NOTE: the `console` subcommand (for the standalone binary) is prepended by
   // the caller via naps2Prefix(); these are the flags only.
   const args = ["-o", output, "--dpi", String(dpi), "--driver", driver];
+  // Use default settings, not whatever profile was last used in the NAPS2 window
+  // (that profile can point at another driver/device).
+  if (noProfile) args.push("--noprofile");
 
   // Map our source names to NAPS2's (glass | feeder | duplex).
   const source = opts.source || (mode === "continuous" ? "feeder" : "glass");

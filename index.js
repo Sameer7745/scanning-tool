@@ -33,7 +33,19 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { detectBackend, listDevices, startScan, diagnostics, resetBackendCache } from "./scanner.js";
+import {
+  detectBackend,
+  listDevices,
+  cachedDevices,
+  resetDeviceCache,
+  scanStarted,
+  scanEnded,
+  startScan,
+  diagnostics,
+  resetBackendCache,
+  rememberAutoSource,
+  fallbackSource,
+} from "./scanner.js";
 import { resolveScannerUrl, esclReachable, discoverScanners } from "./escl.js";
 import { getConfig, setConfig } from "./config.js";
 import { setupInfo, runInstall } from "./setup.js";
@@ -101,7 +113,7 @@ app.get("/api/devices", async (_req, res) => {
       log.debug("devices", `escl discovered ${devices.length}`, devices);
       return res.json({ backend, devices });
     }
-    const d = listDevices();
+    const d = await listDevices();
     log.debug("devices", `found ${d.devices?.length || 0}`, d.devices);
     res.json(d);
   } catch (e) {
@@ -157,6 +169,9 @@ app.post("/api/setup/install", (_req, res) => {
   });
 });
 
+// The panel gives up on a status check after 12 s; the first listing can take longer.
+const FIRST_LIST_WAIT_MS = 8000;
+
 // Live connection status for the UI: is a scanner connected right now?
 app.get("/api/status", async (_req, res) => {
   const { backend } = detectBackend();
@@ -169,10 +184,26 @@ app.get("/api/status", async (_req, res) => {
       out.scanner = url || null;
       out.detail = out.connected ? "reachable" : "no scanner found on the network";
     } else if (backend === "naps2" || backend === "scanimage") {
-      const { devices } = listDevices();
-      out.connected = devices.length > 0;
-      out.scanner = devices[0]?.name || null;
-      out.detail = out.connected ? "USB scanner detected" : "no USB scanner detected";
+      // Answer from the last device list; listDevices() refreshes it in the
+      // background when it is old. Only the very first check waits for a listing,
+      // and not longer than the panel does.
+      const refresh = listDevices();
+      const cached = cachedDevices();
+      const list =
+        cached && cached.backend === backend
+          ? cached
+          : await Promise.race([refresh, new Promise((r) => setTimeout(() => r(null), FIRST_LIST_WAIT_MS))]);
+      if (!list) {
+        out.detail = "still looking for the scanner…";
+      } else if (list.busy) {
+        out.connected = true;
+        out.detail = "scanning";
+      } else {
+        out.connected = list.devices.length > 0;
+        out.scanner = list.devices[0]?.name || null;
+        out.detail = out.connected ? "USB scanner detected" : "no USB scanner detected";
+        out.checkedAt = new Date(list.at).toISOString();
+      }
     } else if (backend === "mock") {
       out.connected = true;
       out.scanner = "Mock scanner (sample image)";
@@ -187,7 +218,7 @@ app.get("/api/status", async (_req, res) => {
 // One-stop diagnostics: backend, version, detected devices, OCR, errors.
 // Visit http://<server>:3001/api/diagnostics to see why scanning may be failing.
 app.get("/api/diagnostics", async (_req, res) => {
-  const d = diagnostics();
+  const d = await diagnostics();
   d.ocr = { available: ocrAvailable(), enabled: OCR_ENABLED };
   d.logLevel = log.level;
   // For the network backend, resolve the scanner's CURRENT address live so the
@@ -245,7 +276,20 @@ app.post("/api/export/pdf", (req, res) => {
   }
 });
 
-app.get("/api/scan", (req, res) => {
+// NAPS2 prints only errors when run without -v; drop its banner lines, if any.
+function scannerMessage(text) {
+  return String(text || "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l && !/^NAPS2 \d|^Copyright /i.test(l))
+    .join(" ")
+    .slice(0, 400);
+}
+
+// "Device not found"-style errors: the cached device list is wrong, list again.
+const DEVICE_GONE = /could not be found|no device was specified|no scanner|device.*(not found|offline|disconnected)/i;
+
+app.get("/api/scan", async (req, res) => {
   // --- Set up Server-Sent Events ---
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
@@ -269,18 +313,43 @@ app.get("/api/scan", (req, res) => {
 
   log.info("scan", "start", { mode: opts.mode, dpi: opts.dpi, source: opts.source, device: opts.device, ocr: ocrOn });
 
+  let clientGone = false;
+  res.on("close", () => (clientGone = true));
+
   let session;
   try {
-    session = startScan(opts);
+    session = await startScan(opts);
   } catch (e) {
     log.error("scan", "startScan threw", String(e.message || e));
+    if (DEVICE_GONE.test(String(e.message || e))) resetDeviceCache();
     send("error", { message: String(e.message || e) });
     return res.end();
   }
+  if (clientGone) {
+    try {
+      session.child?.kill();
+      session.mock?.cancel();
+      session.escl?.cancel();
+      rmSync(session.dir, { recursive: true, force: true });
+    } catch {}
+    return;
+  }
+  // While scanning, status checks answer from the cache (a busy scanner lists as absent).
+  scanStarted();
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    scanEnded();
+  };
 
-  const { dir, backend, child, mock, escl, command, args } = session;
+  // The running attempt. Source "auto" may need a second attempt from the other
+  // source (a feeder-only scanner has no glass), so these change on a retry.
+  let { dir, backend, child, mock, escl } = session;
+  let retried = false;
   // The single most useful line for debugging a scanner problem:
-  log.info("scan", `backend=${backend} cmd`, [command, ...(args || [])].join(" "));
+  const logCmd = (s) => log.info("scan", `backend=${s.backend} cmd`, [s.command, ...(s.args || [])].join(" "));
+  logCmd(session);
   send("status", { backend, mode: opts.mode, message: "Scanning…" });
 
   // --- Watch the temp dir and stream each completed page file ---
@@ -289,6 +358,8 @@ app.get("/api/scan", (req, res) => {
   let pageIndex = 0;
   let stderr = "";
   let finished = false;
+  // The error of every failed attempt: the retry's own error is often less telling.
+  const attemptErrors = [];
 
   const readStable = () => {
     let files;
@@ -339,18 +410,37 @@ app.get("/api/scan", (req, res) => {
 
   const poll = setInterval(readStable, 300);
 
+  const hasPages = () => {
+    try {
+      return pageIndex > 0 || readdirSync(dir).some((f) => /\.jpe?g$/i.test(f));
+    } catch {
+      return pageIndex > 0;
+    }
+  };
+
   const finish = (errMessage) => {
     if (finished) return;
     finished = true;
     clearInterval(poll);
+    release();
     // Final sweep in case the last page settled between polls.
     readStable();
     setTimeout(() => {
       readStable();
-      if (errMessage && pageIndex === 0) {
-        log.error("scan", "failed", { message: errMessage, stderr: stderr.trim() || undefined });
-        send("error", { message: errMessage });
+      if (pageIndex === 0 && backend !== "mock") {
+        if (errMessage) attemptErrors.push(errMessage);
+        // Prefer a message from the scanner over our generic "exited with code N".
+        const telling = attemptErrors.filter((m) => !/^Scanner exited with code/.test(m));
+        const message =
+          telling[telling.length - 1] ||
+          attemptErrors[attemptErrors.length - 1] ||
+          "No pages were scanned. Put the letter in the feeder (or on the glass) and scan again.";
+        if (attemptErrors.some((m) => DEVICE_GONE.test(m))) resetDeviceCache();
+        log.error("scan", "failed", { message, attempts: attemptErrors, stderr: stderr.trim() || undefined });
+        send("error", { message });
       } else {
+        // An "auto" scan that worked: use this source first for this scanner next time.
+        if (pageIndex > 0 && session.autoSource) rememberAutoSource(session.deviceKey, session.autoSource);
         log.info("scan", "done", { pages: pageIndex });
         send("done", { count: pageIndex });
       }
@@ -361,43 +451,102 @@ app.get("/api/scan", (req, res) => {
     }, 400);
   };
 
-  if (child) {
-    child.stderr.on("data", (d) => (stderr += d.toString()));
-    child.on("error", (err) => {
-      log.error("scan", "spawn error", err.message);
-      finish(`Failed to launch scanner: ${err.message}`);
+  // One attempt has ended. An "auto" scan that produced no page is tried once
+  // more from the other source (glass <-> feeder) before reporting the error.
+  const attemptEnded = async (errMessage) => {
+    if (finished) return;
+    // No point trying the other source when the scanner itself wasn't found.
+    if (!session.autoSource || retried || hasPages() || DEVICE_GONE.test(errMessage || "")) return finish(errMessage);
+    retried = true;
+    if (errMessage) attemptErrors.push(errMessage);
+    const next = fallbackSource(session.autoSource);
+    log.info("scan", `no pages from ${session.autoSource}, retrying from ${next}`, {
+      error: errMessage || undefined,
+      stderr: stderr.trim() || undefined,
     });
-    child.on("close", (code) => {
-      // scanimage ADF batch exits non-zero with "out of documents" after the
-      // LAST page — that's success, not an error, when we already got pages.
-      const benign =
-        /out of documents|no more documents|Document feeder out of documents/i.test(
-          stderr
-        );
-      log.debug("scan", `process closed code=${code}`, { benign, pages: pageIndex, stderr: stderr.trim() || undefined });
-      if (code !== 0 && !benign && pageIndex === 0) {
-        finish(stderr.trim() || `Scanner exited with code ${code}`);
-      } else {
-        finish();
-      }
+    let again;
+    try {
+      again = await startScan({ ...opts, source: next });
+    } catch (e) {
+      return finish(String(e.message || e));
+    }
+    if (finished) {
+      // The client went away while the retry was starting.
+      try {
+        again.child?.kill();
+        again.escl?.cancel();
+        rmSync(again.dir, { recursive: true, force: true });
+      } catch {}
+      return;
+    }
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {}
+    // Remember the fallback under the auto key if it works.
+    session = { ...again, autoSource: next, deviceKey: session.deviceKey };
+    ({ dir, backend, child, mock, escl } = again);
+    stderr = "";
+    sent.clear();
+    sizes.clear();
+    logCmd(again);
+    send("status", {
+      backend,
+      mode: opts.mode,
+      message: next === "feeder" ? "No flatbed found. Scanning from the document feeder…" : "Feeder is empty. Scanning from the flatbed…",
     });
-  } else if (escl) {
-    // Direct eSCL network scan: finish when the HTTP job completes.
-    escl.completed
-      .then(() => finish())
-      .catch((e) => finish(String(e && e.message ? e.message : e)));
-  } else if (mock) {
-    // Mock backend: finish shortly after the last simulated page lands.
-    setTimeout(finish, (mock.totalApprox + 1) * 1300 + 1000);
-  } else {
-    finish("No scan process started.");
-  }
+    watch();
+  };
+
+  // Wires the current attempt's process / job to attemptEnded.
+  const watch = () => {
+    if (child) {
+      const proc = child;
+      let output = "";
+      proc.stdout.on("data", (d) => (output += d.toString()));
+      proc.stderr.on("data", (d) => (stderr += d.toString()));
+      proc.on("error", (err) => {
+        log.error("scan", "spawn error", err.message);
+        if (proc === child) finish(`Failed to launch scanner: ${err.message}`);
+      });
+      proc.on("close", (code) => {
+        if (proc !== child) return; // a cancelled attempt
+        // scanimage ADF batch exits non-zero with "out of documents" after the
+        // LAST page — that's success, not an error, when we already got pages.
+        const benign =
+          /out of documents|no more documents|Document feeder out of documents/i.test(
+            stderr
+          );
+        log.debug("scan", `process closed code=${code}`, { benign, pages: pageIndex, stdout: output.trim() || undefined, stderr: stderr.trim() || undefined });
+        // NAPS2 reports most errors ("The selected scanner could not be found.")
+        // on stdout and still exits 0, so any text with no pages is an error too.
+        const message = scannerMessage(stderr) || scannerMessage(output);
+        if (pageIndex === 0 && !benign && (code !== 0 || message)) {
+          attemptEnded(message || `Scanner exited with code ${code} without saying why.`);
+        } else {
+          attemptEnded();
+        }
+      });
+    } else if (escl) {
+      // Direct eSCL network scan: finish when the HTTP job completes.
+      const job = escl;
+      job.completed
+        .then(() => job === escl && attemptEnded())
+        .catch((e) => job === escl && attemptEnded(String(e && e.message ? e.message : e)));
+    } else if (mock) {
+      // Mock backend: finish shortly after the last simulated page lands.
+      setTimeout(finish, (mock.totalApprox + 1) * 1300 + 1000);
+    } else {
+      finish("No scan process started.");
+    }
+  };
+  watch();
 
   // Client disconnected -> kill the scan.
   req.on("close", () => {
     if (finished) return;
     finished = true;
     clearInterval(poll);
+    release();
     try {
       if (child) child.kill();
       if (mock) mock.cancel();
