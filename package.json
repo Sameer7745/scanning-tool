@@ -1,0 +1,19 @@
+{
+  "name": "scan-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Scan Bridge — drive a USB/network scanner from a web page. server/ = the bridge, web/ = the panel, packaging/ = the single-file apps.",
+  "scripts": {
+    "setup": "npm --prefix server install && npm --prefix web install && npm --prefix packaging install",
+    "start": "npm --prefix server start",
+    "dev:server": "npm --prefix server run dev",
+    "dev:web": "npm --prefix web run dev",
+    "build:web": "npm --prefix web run build",
+    "icon": "node packaging/icon/make-icon.mjs",
+    "bundle": "npm --prefix packaging run bundle",
+    "exe:win": "npm run build:web && npm run bundle && node packaging/pkg.mjs win",
+    "exe:mac": "npm run build:web && npm run bundle && node packaging/pkg.mjs mac-arm && node packaging/pkg.mjs mac-x64",
+    "exe:linux": "npm run build:web && npm run bundle && node packaging/pkg.mjs linux",
+    "exe:all": "npm run build:web && npm run bundle && node packaging/pkg.mjs"
+  }
+}

@@ -1,0 +1,42 @@
+# systemd unit to run the Scan Tool bridge on a Linux server at boot.
+#
+# 1. Edit the paths/user below to match your install.
+# 2. Build the UI once:   cd web && npm install && npm run build
+# 3. Install the service:
+#      sudo cp deploy/scan-tool.service /etc/systemd/system/
+#      sudo systemctl daemon-reload
+#      sudo systemctl enable --now scan-tool
+# 4. Check it:  systemctl status scan-tool   and open http://<server-ip>:3001
+#
+# To enable OCR instead, add:  Environment=OCR_ENABLED=1
+
+[Unit]
+Description=Scan Tool bridge (scanner -> web)
+After=network-online.target avahi-daemon.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Change these three to match your server:
+User=scantool
+WorkingDirectory=/opt/scan-tool/server
+ExecStart=/usr/bin/node index.js
+Environment=PORT=3001
+#
+# DEFAULT = USB scanner (no config needed): the bridge auto-detects the USB
+# scanner via NAPS2 (install NAPS2 on this machine). Nothing is hardcoded.
+#
+# --- WIRELESS (enable LATER, optional) ------------------------------------
+# To use a network scanner instead, uncomment ONE of these. Prefer SCANNER_NAME
+# (survives IP changes); SCANNER_URL pins a specific address.
+# Environment=SCANNER_NAME=HP Smart Tank
+# Environment=SCANNER_URL=http://<scanner-ip>/eSCL
+# --------------------------------------------------------------------------
+# Optional debugging:
+# Environment=DEBUG=1
+# Environment=LOG_FILE=/var/log/scan-tool.log
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -479,12 +479,12 @@ function buildNaps2Args({ dir, mode, dpi, opts, noProfile }) {
 }
 
 /**
- * Mock backend: copies the bundled WhatsApp sample image as 1 page (single)
+ * Mock backend: copies the sample image (assets/sample-scan.jpeg) as 1 page (single)
  * or 3 pages (continuous) with a small delay, so the full UI works with no
  * hardware. Enable with MOCK=1.
  */
 function runMock(dir, mode) {
-  const sample = join(__dirname, "..", "WhatsApp Image 2026-10-07 at 2.18.16 PM.jpeg");
+  const sample = join(__dirname, "assets", "sample-scan.jpeg");
   const count = mode === "continuous" ? 3 : 1;
   let i = 0;
   const timers = [];
