@@ -498,9 +498,12 @@ function buildNaps2Args({ dir, mode, dpi, opts, noProfile }) {
   // NOTE: the `console` subcommand (for the standalone binary) is prepended by
   // the caller via naps2Prefix(); these are the flags only.
   const args = ["-o", output, "--dpi", String(dpi), "--driver", driver];
-  // Use default settings, not whatever profile was last used in the NAPS2 window
-  // (that profile can point at another driver/device).
-  if (noProfile) args.push("--noprofile");
+  // NAPS2_PROFILE=<name>: scan with that profile from the NAPS2 window (for a
+  // scanner that works there but not with default settings). Otherwise use
+  // default settings, not whatever profile was last used in the window (that
+  // profile can point at another driver/device).
+  if (process.env.NAPS2_PROFILE) args.push("--profile", process.env.NAPS2_PROFILE);
+  else if (noProfile) args.push("--noprofile");
 
   // Map our source names to NAPS2's (glass | feeder | duplex).
   const source = opts.source || (mode === "continuous" ? "feeder" : "glass");
