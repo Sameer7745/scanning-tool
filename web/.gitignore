@@ -1,0 +1,6 @@
+node_modules/
+*.log
+.DS_Store
+
+# Large downloadable binaries are produced by packaging, not committed
+public/downloads/ScanBridge-*
