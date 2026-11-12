@@ -327,9 +327,16 @@ PORT=3001
 | `SCAN_MODE` | `usb`, `wireless`, or `auto` | `SCAN_MODE=usb` |
 | `SCANNER_NAME` | Wireless: find scanner by name (survives IP changes) | `SCANNER_NAME=HP Smart Tank` |
 | `SCANNER_URL` | Wireless: pin a specific address | `SCANNER_URL=http://192.168.1.36/eSCL` |
+| `NAPS2_DEVICE` | USB: use only the scanner whose name contains this (a PC with two scanners) | `NAPS2_DEVICE=M329` |
+| `NAPS2_DRIVER` | USB on Windows: use only this driver (`wia` or `twain`) | `NAPS2_DRIVER=twain` |
+| `NAPS2_PROFILE` | USB: scan with this saved NAPS2 profile instead of default settings | `NAPS2_PROFILE=M329` |
 | `PORT` | Port the Bridge listens on | `PORT=3001` |
 | `OCR_ENABLED` | Turn on text extraction (off by default) | `OCR_ENABLED=1` |
 | `DEBUG` / `LOG_FILE` | Verbose logging / log to a file | `DEBUG=1` |
+
+> **Two scanners on one PC** (e.g. an HP LaserJet M329 and a ScanJet 9000 s1):
+> without `NAPS2_DEVICE` the Bridge uses the first one it finds, usually the
+> 9000 s1 (WIA). Set `NAPS2_DEVICE=M329` or `NAPS2_DEVICE=9000` to pick one.
 
 > **USB now, wireless later:** keep `SCAN_MODE=usb`. When you move to WiFi,
 > change it to `wireless`, set `SCANNER_NAME`, and restart — no code changes.

@@ -236,7 +236,10 @@ async function enumerateDevices(backend, command) {
         : process.platform === "darwin"
         ? ["apple"]
         : ["sane"];
-    if (_naps2Driver && drivers.includes(_naps2Driver)) {
+    // NAPS2_DRIVER=twain|wia: list (and scan) through that driver only.
+    const forced = String(process.env.NAPS2_DRIVER || "").toLowerCase();
+    if (drivers.includes(forced)) drivers = [forced];
+    else if (_naps2Driver && drivers.includes(_naps2Driver)) {
       drivers = [_naps2Driver, ...drivers.filter((d) => d !== _naps2Driver)];
     }
     const prefix = naps2Prefix(command);
@@ -247,7 +250,7 @@ async function enumerateDevices(backend, command) {
         timedOut = true;
         log.warn("devices", `NAPS2 --listdevices --driver ${d} timed out`);
       }
-      const names = r.out.split("\n").map((s) => s.trim()).filter(Boolean);
+      const names = pickNames(r.out);
       if (names.length) {
         _naps2Driver = d;
         return { devices: names.map((name) => ({ id: `${d}:${name}`, name: `${name} (${d})` })) };
@@ -293,6 +296,21 @@ export function listDevices({ maxAgeMs = DEVICE_TTL } = {}) {
 }
 
 /**
+ * The device names in a NAPS2 --listdevices output. With NAPS2_DEVICE set (part
+ * of a name, e.g. "M329"), only the scanners whose name contains it: a PC with
+ * two scanners then always uses the right one, and shows offline without it.
+ */
+function pickNames(out) {
+  const names = String(out).split("\n").map((s) => s.trim()).filter(Boolean);
+  const want = String(process.env.NAPS2_DEVICE || "").trim().toLowerCase();
+  return want ? names.filter((n) => n.toLowerCase().includes(want)) : names;
+}
+
+// Model numbers in a scanner name ("HP LJ Pro M329 TWAIN" -> ["m329"]), to match
+// the same scanner across drivers, whose names differ.
+const modelWords = (name) => String(name).toLowerCase().match(/[a-z]*\d[a-z\d]*/g) || [];
+
+/**
  * On Windows, the same scanner through the other NAPS2 driver (WIA <-> TWAIN),
  * as a device id, or null. Some drivers list a scanner but can't scan with it
  * (e.g. HP's TWAIN driver answering "TWAIN error: Success" with no pages).
@@ -305,7 +323,9 @@ export async function otherDriverDevice(deviceId) {
   const other = used === "twain" ? "wia" : used === "wia" ? "twain" : null;
   if (!other) return null;
   const r = await runAsync(command, [...naps2Prefix(command), "--listdevices", "--driver", other], LIST_TIMEOUT);
-  const name = r.out.split("\n").map((s) => s.trim()).filter(Boolean)[0];
+  // Only the same scanner: never fall over to another one on this PC.
+  const models = modelWords(String(deviceId).slice(used.length + 1));
+  const name = pickNames(r.out).find((n) => models.length && modelWords(n).some((w) => models.includes(w)));
   return name ? `${other}:${name}` : null;
 }
 
