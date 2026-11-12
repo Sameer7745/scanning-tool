@@ -12,7 +12,7 @@
 //                             `dir` for new page files and streams them out.
 
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, copyFileSync, existsSync } from "node:fs";
+import { mkdtempSync, copyFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -370,6 +370,7 @@ export async function startScan(opts = {}) {
       resolved.device = (devices && devices[0] && devices[0].id) || _lastDevice || "";
     }
     if (!resolved.device) {
+      rmSync(dir, { recursive: true, force: true });
       throw new Error(
         "No scanner found. Check the scanner is switched on and its USB cable is connected to this computer, then try again."
       );

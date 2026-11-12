@@ -67,13 +67,23 @@ function localSubnets() {
   return out;
 }
 
+/**
+ * Is this reply to GET .../ScannerStatus from a real eSCL scanner? Any web
+ * server answers (a router replies 301/404), so it must be the scanner's status
+ * XML, or 503 while the scanner is busy.
+ */
+function isScannerStatus(r) {
+  if (r.status === 503) return true;
+  return r.status === 200 && /ScannerStatus|pwg:State/i.test(r.body.toString("utf8"));
+}
+
 /** Probe one IP for an eSCL scanner. Returns {ip,name,url} or null. */
 async function probeEscl(ip, timeout = 1200) {
   const port = Number(process.env.SCANNER_PROBE_PORT) || 80; // 80 for real HP scanners
   const host = port === 80 ? ip : `${ip}:${port}`;
   try {
     const r = await request(`http://${host}/eSCL/ScannerStatus`, { timeout });
-    if (r.status < 200 || r.status >= 500) return null;
+    if (!isScannerStatus(r)) return null;
     let name = `Scanner ${ip}`;
     try {
       const c = await request(`http://${host}/eSCL/ScannerCapabilities`, { timeout });
@@ -127,7 +137,7 @@ export async function discoverScanners(nameFilter = "") {
 export async function esclReachable(base, timeout = 4000) {
   try {
     const r = await request(`${base}/ScannerStatus`, { timeout });
-    return r.status >= 200 && r.status < 500; // any real HTTP reply = it's there
+    return isScannerStatus(r);
   } catch {
     return false;
   }
