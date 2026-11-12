@@ -292,6 +292,35 @@ export function listDevices({ maxAgeMs = DEVICE_TTL } = {}) {
   return _listing;
 }
 
+/**
+ * On Windows, the same scanner through the other NAPS2 driver (WIA <-> TWAIN),
+ * as a device id, or null. Some drivers list a scanner but can't scan with it
+ * (e.g. HP's TWAIN driver answering "TWAIN error: Success" with no pages).
+ */
+export async function otherDriverDevice(deviceId) {
+  if (process.platform !== "win32") return null;
+  const { backend, command } = detectBackend();
+  if (backend !== "naps2") return null;
+  const used = String(deviceId || "").split(":")[0].toLowerCase();
+  const other = used === "twain" ? "wia" : used === "wia" ? "twain" : null;
+  if (!other) return null;
+  const r = await runAsync(command, [...naps2Prefix(command), "--listdevices", "--driver", other], LIST_TIMEOUT);
+  const name = r.out.split("\n").map((s) => s.trim()).filter(Boolean)[0];
+  return name ? `${other}:${name}` : null;
+}
+
+/** A device that scanned: list and use it first from now on. */
+export function preferDevice(id) {
+  const sep = String(id).indexOf(":");
+  if (sep <= 0) return;
+  _naps2Driver = id.slice(0, sep);
+  _lastDevice = id;
+  if (_devices) {
+    const name = `${id.slice(sep + 1)} (${_naps2Driver})`;
+    _devices = { ..._devices, devices: [{ id, name }, ..._devices.devices.filter((d) => d.id !== id)] };
+  }
+}
+
 // The standalone "NAPS2" binary (macOS/Linux) needs the `console` subcommand;
 // the Windows "NAPS2.Console.exe" takes flags directly. Returns the argv prefix.
 function naps2Prefix(command) {
@@ -357,6 +386,7 @@ export async function startScan(opts = {}) {
   let args;
   let autoSource;
   let deviceKey;
+  let resolvedDevice;
   if (backend === "scanimage") {
     // scanimage without --source uses the scanner's own default source, which
     // already suits feeder-only scanners: no auto fallback needed.
@@ -380,12 +410,13 @@ export async function startScan(opts = {}) {
       autoSource = autoSources.get(deviceKey) || autoDefault;
       resolved.source = autoSource;
     }
+    resolvedDevice = resolved.device;
     args = [...naps2Prefix(command), ...buildNaps2Args({ dir, mode, dpi, opts: resolved, noProfile })];
   }
 
   const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
   // Return command+args so the caller can log exactly what ran (debugging).
-  return { dir, backend, child, command, args, autoSource, deviceKey };
+  return { dir, backend, child, command, args, autoSource, deviceKey, device: backend === "naps2" ? resolvedDevice : undefined };
 }
 
 /** Full diagnostics snapshot for the /api/diagnostics endpoint (lists devices afresh). */

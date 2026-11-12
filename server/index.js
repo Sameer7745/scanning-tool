@@ -45,6 +45,8 @@ import {
   resetBackendCache,
   rememberAutoSource,
   fallbackSource,
+  otherDriverDevice,
+  preferDevice,
 } from "./scanner.js";
 import { resolveScannerUrl, esclReachable, discoverScanners } from "./escl.js";
 import { getConfig, setConfig } from "./config.js";
@@ -286,6 +288,19 @@ function scannerMessage(text) {
     .slice(0, 400);
 }
 
+// NAPS2's TWAIN error text means little to a clerk; say what to check, keep the original.
+function friendlyScanError(message) {
+  if (/TWAIN error|No scanned pages to export/i.test(message)) {
+    return (
+      "The scanner's TWAIN driver returned no pages. Check the letter is in the feeder (face up) or on the glass, " +
+      "close HP Scan / HP Smart if open, wake the scanner (press a button on it), then scan again. " +
+      "If it keeps happening, install HP's full driver for this scanner (it adds the WIA driver). " +
+      `(Scanner said: ${message})`
+    );
+  }
+  return message;
+}
+
 // "Device not found"-style errors: the cached device list is wrong, list again.
 const DEVICE_GONE = /could not be found|no device was specified|no scanner|device.*(not found|offline|disconnected)/i;
 
@@ -347,6 +362,8 @@ app.get("/api/scan", async (req, res) => {
   // source (a feeder-only scanner has no glass), so these change on a retry.
   let { dir, backend, child, mock, escl } = session;
   let retried = false;
+  let switchedDriver = false;
+  const firstAutoSource = session.autoSource;
   // The single most useful line for debugging a scanner problem:
   const logCmd = (s) => log.info("scan", `backend=${s.backend} cmd`, [s.command, ...(s.args || [])].join(" "));
   logCmd(session);
@@ -437,10 +454,12 @@ app.get("/api/scan", async (req, res) => {
           "No pages were scanned. Put the letter in the feeder (or on the glass) and scan again.";
         if (attemptErrors.some((m) => DEVICE_GONE.test(m))) resetDeviceCache();
         log.error("scan", "failed", { message, attempts: attemptErrors, stderr: stderr.trim() || undefined });
-        send("error", { message });
+        send("error", { message: friendlyScanError(message) });
       } else {
         // An "auto" scan that worked: use this source first for this scanner next time.
         if (pageIndex > 0 && session.autoSource) rememberAutoSource(session.deviceKey, session.autoSource);
+        // Scanned through the other driver: use it first from now on.
+        if (pageIndex > 0 && switchedDriver && session.device) preferDevice(session.device);
         log.info("scan", "done", { pages: pageIndex });
         send("done", { count: pageIndex });
       }
@@ -452,21 +471,45 @@ app.get("/api/scan", async (req, res) => {
   };
 
   // One attempt has ended. An "auto" scan that produced no page is tried once
-  // more from the other source (glass <-> feeder) before reporting the error.
+  // more from the other source (glass <-> feeder); on Windows, a scan that still
+  // got nothing is then tried through the other driver (TWAIN <-> WIA).
   const attemptEnded = async (errMessage) => {
     if (finished) return;
-    // No point trying the other source when the scanner itself wasn't found.
-    if (!session.autoSource || retried || hasPages() || DEVICE_GONE.test(errMessage || "")) return finish(errMessage);
-    retried = true;
+    if (hasPages()) return finish(errMessage);
+    const gone = DEVICE_GONE.test(errMessage || "");
+    let nextOpts;
+    let nextAuto;
+    let statusMessage;
+    if (session.autoSource && !retried && !gone) {
+      // No point trying the other source when the scanner itself wasn't found.
+      retried = true;
+      nextAuto = fallbackSource(session.autoSource);
+      nextOpts = { ...opts, device: session.device || opts.device, source: nextAuto };
+      statusMessage =
+        nextAuto === "feeder" ? "No flatbed found. Scanning from the document feeder…" : "Feeder is empty. Scanning from the flatbed…";
+      log.info("scan", `no pages from ${session.autoSource}, retrying from ${nextAuto}`, {
+        error: errMessage || undefined,
+        stderr: stderr.trim() || undefined,
+      });
+    } else if (!switchedDriver && session.device && backend === "naps2") {
+      switchedDriver = true;
+      const other = await otherDriverDevice(session.device);
+      if (finished) return;
+      if (other) {
+        // Start over from the first source, and allow its glass <-> feeder retry.
+        nextAuto = firstAutoSource;
+        nextOpts = { ...opts, device: other, source: opts.source || firstAutoSource };
+        retried = !firstAutoSource;
+        statusMessage = "Trying the scanner's other driver…";
+        log.info("scan", `no pages from ${session.device}, retrying with ${other}`, { error: errMessage || undefined });
+      }
+    }
+    if (!nextOpts) return finish(errMessage);
     if (errMessage) attemptErrors.push(errMessage);
-    const next = fallbackSource(session.autoSource);
-    log.info("scan", `no pages from ${session.autoSource}, retrying from ${next}`, {
-      error: errMessage || undefined,
-      stderr: stderr.trim() || undefined,
-    });
+    const deviceKey = nextOpts.device === session.device ? session.deviceKey : nextAuto ? `naps2:${nextOpts.device}` : undefined;
     let again;
     try {
-      again = await startScan({ ...opts, source: next });
+      again = await startScan(nextOpts);
     } catch (e) {
       return finish(String(e.message || e));
     }
@@ -483,17 +526,13 @@ app.get("/api/scan", async (req, res) => {
       rmSync(dir, { recursive: true, force: true });
     } catch {}
     // Remember the fallback under the auto key if it works.
-    session = { ...again, autoSource: next, deviceKey: session.deviceKey };
+    session = { ...again, device: again.device || nextOpts.device, autoSource: nextAuto, deviceKey };
     ({ dir, backend, child, mock, escl } = again);
     stderr = "";
     sent.clear();
     sizes.clear();
     logCmd(again);
-    send("status", {
-      backend,
-      mode: opts.mode,
-      message: next === "feeder" ? "No flatbed found. Scanning from the document feeder…" : "Feeder is empty. Scanning from the flatbed…",
-    });
+    send("status", { backend, mode: opts.mode, message: statusMessage });
     watch();
   };
 
